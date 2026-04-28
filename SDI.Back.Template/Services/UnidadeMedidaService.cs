@@ -1,14 +1,16 @@
 using SDI.Back.Template.Exceptions;
+using SDI.Back.Template.Messaging;
 using SDI.Back.Template.Models.Dto.Input;
 using SDI.Back.Template.Models.Dto.Output;
 using SDI.Back.Template.Models.Entity;
+using SDI.Back.Template.Models.Messaging;
 using SDI.Back.Template.Models.Responses;
 using SDI.Back.Template.Repositories.Interfaces;
 using SDI.Back.Template.Services.Interfaces;
 
 namespace SDI.Back.Template.Services;
 
-public sealed class UnidadeMedidaService(IUnidadeMedidaRepository repository) : IUnidadeMedidaService
+public sealed class UnidadeMedidaService(IUnidadeMedidaRepository repository, IKafkaEventPublisher kafkaEventPublisher) : IUnidadeMedidaService
 {
     public async Task<PagedResult<UnidadeMedidaOutput>> ListarAsync(int pagina, int tamanhoPagina, bool? ativo, string? busca, CancellationToken cancellationToken)
     {
@@ -34,7 +36,18 @@ public sealed class UnidadeMedidaService(IUnidadeMedidaRepository repository) : 
             UsuarioCadastro = input.UsuarioCadastro
         };
 
-        return (await repository.CriarAsync(entity, cancellationToken)).ToOutput();
+        var output = (await repository.CriarAsync(entity, cancellationToken)).ToOutput();
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<UnidadeMedidaOutput>
+        {
+            EventType = EventTypes.UnidadeMedidaCriada,
+            AggregateType = "unidade-medida",
+            AggregateId = output.Id,
+            UserId = input.UsuarioCadastro,
+            Payload = output
+        }, cancellationToken);
+
+        return output;
     }
 
     public async Task<UnidadeMedidaOutput> AtualizarAsync(Guid id, UnidadeMedidaInput input, CancellationToken cancellationToken)
@@ -50,7 +63,18 @@ public sealed class UnidadeMedidaService(IUnidadeMedidaRepository repository) : 
 
         var updated = await repository.AtualizarAsync(entity, cancellationToken)
             ?? throw new DomainException("Unidade de medida nao encontrada.", StatusCodes.Status404NotFound);
-        return updated.ToOutput();
+        var output = updated.ToOutput();
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<UnidadeMedidaOutput>
+        {
+            EventType = EventTypes.UnidadeMedidaAtualizada,
+            AggregateType = "unidade-medida",
+            AggregateId = output.Id,
+            UserId = input.UsuarioAlteracao,
+            Payload = output
+        }, cancellationToken);
+
+        return output;
     }
 
     public async Task DefinirAtivoAsync(Guid id, bool ativo, Guid? usuarioAlteracao, CancellationToken cancellationToken)
@@ -59,5 +83,18 @@ public sealed class UnidadeMedidaService(IUnidadeMedidaRepository repository) : 
         {
             throw new DomainException("Unidade de medida nao encontrada.", StatusCodes.Status404NotFound);
         }
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<StatusChangedPayload>
+        {
+            EventType = EventTypes.UnidadeMedidaStatusAlterado,
+            AggregateType = "unidade-medida",
+            AggregateId = id,
+            UserId = usuarioAlteracao,
+            Payload = new StatusChangedPayload
+            {
+                Id = id,
+                Ativo = ativo
+            }
+        }, cancellationToken);
     }
 }

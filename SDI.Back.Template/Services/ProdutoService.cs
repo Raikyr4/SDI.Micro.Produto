@@ -1,7 +1,9 @@
 using SDI.Back.Template.Exceptions;
+using SDI.Back.Template.Messaging;
 using SDI.Back.Template.Models.Dto.Input;
 using SDI.Back.Template.Models.Dto.Output;
 using SDI.Back.Template.Models.Entity;
+using SDI.Back.Template.Models.Messaging;
 using SDI.Back.Template.Models.Responses;
 using SDI.Back.Template.Repositories.Interfaces;
 using SDI.Back.Template.Services.Interfaces;
@@ -11,7 +13,8 @@ namespace SDI.Back.Template.Services;
 public sealed class ProdutoService(IProdutoRepository produtoRepository,
                                    ITransporteRepository transporteRepository,
                                    ICategoriaRepository categoriaRepository,
-                                   IUnidadeMedidaRepository unidadeMedidaRepository) : IProdutoService
+                                   IUnidadeMedidaRepository unidadeMedidaRepository,
+                                   IKafkaEventPublisher kafkaEventPublisher) : IProdutoService
 {
     public async Task<PagedResult<ProdutoOutput>> ListarAsync(int pagina, int tamanhoPagina, bool? ativo, string? busca, Guid? categoriaId, Guid? transporteId, Guid? unidadeMedidaId, CancellationToken cancellationToken)
     {
@@ -41,7 +44,18 @@ public sealed class ProdutoService(IProdutoRepository produtoRepository,
         await ValidarRelacionamentosAsync(input, cancellationToken);
 
         var entity = ToEntity(Guid.Empty, input, isCreate: true);
-        return (await produtoRepository.CriarAsync(entity, cancellationToken)).ToOutput();
+        var output = (await produtoRepository.CriarAsync(entity, cancellationToken)).ToOutput();
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<ProdutoOutput>
+        {
+            EventType = EventTypes.ProdutoCriado,
+            AggregateType = "produto",
+            AggregateId = output.Id,
+            UserId = input.UsuarioCadastro,
+            Payload = output
+        }, cancellationToken);
+
+        return output;
     }
 
     public async Task<ProdutoOutput> AtualizarAsync(Guid id, ProdutoInput input, CancellationToken cancellationToken)
@@ -51,7 +65,18 @@ public sealed class ProdutoService(IProdutoRepository produtoRepository,
         var entity = ToEntity(id, input, isCreate: false);
         var updated = await produtoRepository.AtualizarAsync(entity, cancellationToken)
             ?? throw new DomainException("Produto nao encontrado.", StatusCodes.Status404NotFound);
-        return updated.ToOutput();
+        var output = updated.ToOutput();
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<ProdutoOutput>
+        {
+            EventType = EventTypes.ProdutoAtualizado,
+            AggregateType = "produto",
+            AggregateId = output.Id,
+            UserId = input.UsuarioAlteracao,
+            Payload = output
+        }, cancellationToken);
+
+        return output;
     }
 
     public async Task DefinirAtivoAsync(Guid id, bool ativo, Guid? usuarioAlteracao, CancellationToken cancellationToken)
@@ -60,6 +85,19 @@ public sealed class ProdutoService(IProdutoRepository produtoRepository,
         {
             throw new DomainException("Produto nao encontrado.", StatusCodes.Status404NotFound);
         }
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<StatusChangedPayload>
+        {
+            EventType = EventTypes.ProdutoStatusAlterado,
+            AggregateType = "produto",
+            AggregateId = id,
+            UserId = usuarioAlteracao,
+            Payload = new StatusChangedPayload
+            {
+                Id = id,
+                Ativo = ativo
+            }
+        }, cancellationToken);
     }
 
     private async Task ValidarRelacionamentosAsync(ProdutoInput input, CancellationToken cancellationToken)

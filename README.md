@@ -1,7 +1,7 @@
 
 # SDI.Micro.Produto
 
-Microservico de catalogo de produtos do ecossistema SDI, desenvolvido em .NET C# com ASP.NET Core, Dapper e PostgreSQL.
+Microservico de catalogo de produtos do ecossistema SDI, desenvolvido em .NET C# com ASP.NET Core, Dapper, PostgreSQL e Kafka.
 
 Este servico permite o cadastro e manutencao de:
 
@@ -28,6 +28,7 @@ O microservico foi implementado a partir da analise do script [`Scripts/ScriptDe
 - [Payloads de exemplo](#payloads-de-exemplo)
 - [Regras de negocio](#regras-de-negocio)
 - [Tratamento de erros](#tratamento-de-erros)
+- [Integracao Kafka](#integracao-kafka)
 - [Health check](#health-check)
 - [Mapeamento Dapper](#mapeamento-dapper)
 - [Troubleshooting](#troubleshooting)
@@ -62,12 +63,15 @@ Por isso, a API foi dividida em quatro dominios principais:
 | PostgreSQL | Banco relacional |
 | Dapper | Acesso a dados e mapeamento leve |
 | Npgsql | Driver PostgreSQL para .NET |
+| Apache Kafka | Comunicacao assincrona com outros microservicos |
+| Confluent.Kafka | Producer Kafka usado pela API |
 | Serilog | Logging estruturado em console |
 | Swashbuckle | Geracao de documentacao Swagger/OpenAPI |
 
 Pacotes NuGet usados no projeto:
 
 ```xml
+<PackageReference Include="Confluent.Kafka" Version="2.8.0" />
 <PackageReference Include="Dapper" Version="2.1.66" />
 <PackageReference Include="Npgsql" Version="9.0.3" />
 <PackageReference Include="Serilog.AspNetCore" Version="8.0.1" />
@@ -93,6 +97,8 @@ SDI.Micro.Produto/
       ProdutosController.cs
       TransportesController.cs
       UnidadesMedidaController.cs
+    Configuration/
+      KafkaOptions.cs
     Data/
       IDbConnectionFactory.cs
       NpgsqlConnectionFactory.cs
@@ -108,7 +114,13 @@ SDI.Micro.Produto/
         Input/
         Output/
       Entity/
+      Messaging/
       Responses/
+    Messaging/
+      EventTypes.cs
+      IKafkaEventPublisher.cs
+      KafkaEventPublisher.cs
+      KafkaServiceCollectionExtensions.cs
     Repositories/
       Interfaces/
       CategoriaRepository.cs
@@ -486,6 +498,7 @@ Responsaveis por:
 - Normalizacao de dados, como sigla e codigo em maiusculo.
 - Validacao de relacionamentos.
 - Conversao de entidades para DTOs de saida.
+- Publicacao de eventos Kafka apos criacao, atualizacao e alteracao de status bem-sucedidas.
 
 Services existentes:
 
@@ -587,6 +600,42 @@ $env:POSTGRESQL_PORT="5432"
 $env:POSTGRESQL_DATABASE="sdi_produto"
 $env:POSTGRESQL_USER="postgres"
 $env:POSTGRESQL_PASSWORD="SUA_SENHA"
+```
+
+### Kafka
+
+A integracao Kafka fica na secao:
+
+```json
+{
+  "Kafka": {
+    "Enabled": true,
+    "FailOnPublishError": false,
+    "BootstrapServers": "localhost:9092",
+    "ClientId": "sdi-micro-produto",
+    "EventsTopic": "sdi.produto.events",
+    "PublishTimeoutMs": 5000
+  }
+}
+```
+
+Parametros:
+
+| Parametro | Descricao |
+| --- | --- |
+| `Enabled` | Liga ou desliga a publicacao Kafka. |
+| `FailOnPublishError` | Quando `true`, falhas ao publicar evento retornam erro na requisicao. Quando `false`, a API mantem a resposta HTTP e registra log de erro. |
+| `BootstrapServers` | Endereco dos brokers Kafka. |
+| `ClientId` | Identificacao deste producer no Kafka. |
+| `EventsTopic` | Topico onde os eventos do microservico de produto sao publicados. |
+| `PublishTimeoutMs` | Tempo maximo de tentativa de entrega antes de registrar falha. |
+
+Tambem e possivel sobrescrever por variaveis de ambiente usando o padrao do ASP.NET Core:
+
+```powershell
+$env:Kafka__BootstrapServers="localhost:9092"
+$env:Kafka__EventsTopic="sdi.produto.events"
+$env:Kafka__Enabled="true"
 ```
 
 ## Criacao do banco
@@ -1108,6 +1157,48 @@ Quando o PostgreSQL retorna erro de FK, a API responde:
 ```
 
 Na maior parte dos casos, os services validam relacionamentos antes do banco.
+
+## Integracao Kafka
+
+O microservico publica eventos de integracao no topico configurado em `Kafka:EventsTopic` sempre que uma operacao de escrita e concluida no banco.
+
+Eventos publicados:
+
+| Evento | Quando ocorre |
+| --- | --- |
+| `produto.created` | Produto criado |
+| `produto.updated` | Produto atualizado |
+| `produto.status-changed` | Produto ativado ou inativado |
+| `categoria.created` | Categoria criada |
+| `categoria.updated` | Categoria atualizada |
+| `categoria.status-changed` | Categoria ativada ou inativada |
+| `transporte.created` | Transporte criado |
+| `transporte.updated` | Transporte atualizado |
+| `transporte.status-changed` | Transporte ativado ou inativado |
+| `unidade-medida.created` | Unidade de medida criada |
+| `unidade-medida.updated` | Unidade de medida atualizada |
+| `unidade-medida.status-changed` | Unidade de medida ativada ou inativada |
+
+Formato do envelope:
+
+```json
+{
+  "eventId": "00000000-0000-0000-0000-000000000000",
+  "eventType": "produto.created",
+  "source": "SDI.Micro.Produto",
+  "occurredAt": "2026-04-28T14:00:00Z",
+  "aggregateType": "produto",
+  "aggregateId": "00000000-0000-0000-0000-000000000000",
+  "userId": null,
+  "payload": {}
+}
+```
+
+Observacao sobre autenticacao:
+
+- `userId` e preenchido a partir de `usuarioCadastro` ou `usuarioAlteracao`, quando informado.
+- Como a autenticacao ainda sera definida por outro microservico, o campo continua opcional e nao existe dependencia de token/JWT nesta implementacao.
+- Quando o contrato de autenticacao estiver definido, basta trocar a origem do usuario nos controllers/services sem alterar o envelope Kafka.
 
 ## Health check
 

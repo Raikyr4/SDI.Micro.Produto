@@ -2,6 +2,7 @@ using Dapper;
 using Npgsql;
 using SDI.Back.Template.Data;
 using SDI.Back.Template.HealthChecks;
+using SDI.Back.Template.Messaging;
 using SDI.Back.Template.Middlewares;
 using SDI.Back.Template.Repositories;
 using SDI.Back.Template.Repositories.Interfaces;
@@ -17,6 +18,7 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddHealthChecks()
     .AddCheck<PostgresHealthCheck>("postgres");
 builder.Services.AddRouting(options => options.LowercaseUrls = true);
+builder.Services.AddKafkaMessaging(builder.Configuration);
 
 DefaultTypeMap.MatchNamesWithUnderscores = true;
 

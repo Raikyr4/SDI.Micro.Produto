@@ -1,14 +1,16 @@
 using SDI.Back.Template.Exceptions;
+using SDI.Back.Template.Messaging;
 using SDI.Back.Template.Models.Dto.Input;
 using SDI.Back.Template.Models.Dto.Output;
 using SDI.Back.Template.Models.Entity;
+using SDI.Back.Template.Models.Messaging;
 using SDI.Back.Template.Models.Responses;
 using SDI.Back.Template.Repositories.Interfaces;
 using SDI.Back.Template.Services.Interfaces;
 
 namespace SDI.Back.Template.Services;
 
-public sealed class CategoriaService(ICategoriaRepository repository) : ICategoriaService
+public sealed class CategoriaService(ICategoriaRepository repository, IKafkaEventPublisher kafkaEventPublisher) : ICategoriaService
 {
     public async Task<PagedResult<CategoriaOutput>> ListarAsync(int pagina, int tamanhoPagina, bool? ativo, string? busca, Guid? categoriaPaiId, CancellationToken cancellationToken)
     {
@@ -36,7 +38,18 @@ public sealed class CategoriaService(ICategoriaRepository repository) : ICategor
             UsuarioCadastro = input.UsuarioCadastro
         };
 
-        return (await repository.CriarAsync(entity, cancellationToken)).ToOutput();
+        var output = (await repository.CriarAsync(entity, cancellationToken)).ToOutput();
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<CategoriaOutput>
+        {
+            EventType = EventTypes.CategoriaCriada,
+            AggregateType = "categoria",
+            AggregateId = output.Id,
+            UserId = input.UsuarioCadastro,
+            Payload = output
+        }, cancellationToken);
+
+        return output;
     }
 
     public async Task<CategoriaOutput> AtualizarAsync(Guid id, CategoriaInput input, CancellationToken cancellationToken)
@@ -54,7 +67,18 @@ public sealed class CategoriaService(ICategoriaRepository repository) : ICategor
 
         var updated = await repository.AtualizarAsync(entity, cancellationToken)
             ?? throw new DomainException("Categoria nao encontrada.", StatusCodes.Status404NotFound);
-        return updated.ToOutput();
+        var output = updated.ToOutput();
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<CategoriaOutput>
+        {
+            EventType = EventTypes.CategoriaAtualizada,
+            AggregateType = "categoria",
+            AggregateId = output.Id,
+            UserId = input.UsuarioAlteracao,
+            Payload = output
+        }, cancellationToken);
+
+        return output;
     }
 
     public async Task DefinirAtivoAsync(Guid id, bool ativo, Guid? usuarioAlteracao, CancellationToken cancellationToken)
@@ -63,6 +87,19 @@ public sealed class CategoriaService(ICategoriaRepository repository) : ICategor
         {
             throw new DomainException("Categoria nao encontrada.", StatusCodes.Status404NotFound);
         }
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<StatusChangedPayload>
+        {
+            EventType = EventTypes.CategoriaStatusAlterado,
+            AggregateType = "categoria",
+            AggregateId = id,
+            UserId = usuarioAlteracao,
+            Payload = new StatusChangedPayload
+            {
+                Id = id,
+                Ativo = ativo
+            }
+        }, cancellationToken);
     }
 
     private async Task ValidarCategoriaPaiAsync(Guid? categoriaId, Guid? categoriaPaiId, CancellationToken cancellationToken)

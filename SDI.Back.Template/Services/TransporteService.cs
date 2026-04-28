@@ -1,14 +1,16 @@
 using SDI.Back.Template.Exceptions;
+using SDI.Back.Template.Messaging;
 using SDI.Back.Template.Models.Dto.Input;
 using SDI.Back.Template.Models.Dto.Output;
 using SDI.Back.Template.Models.Entity;
+using SDI.Back.Template.Models.Messaging;
 using SDI.Back.Template.Models.Responses;
 using SDI.Back.Template.Repositories.Interfaces;
 using SDI.Back.Template.Services.Interfaces;
 
 namespace SDI.Back.Template.Services;
 
-public sealed class TransporteService(ITransporteRepository repository) : ITransporteService
+public sealed class TransporteService(ITransporteRepository repository, IKafkaEventPublisher kafkaEventPublisher) : ITransporteService
 {
     public async Task<PagedResult<TransporteOutput>> ListarAsync(int pagina, int tamanhoPagina, bool? ativo, string? busca, CancellationToken cancellationToken)
     {
@@ -33,7 +35,18 @@ public sealed class TransporteService(ITransporteRepository repository) : ITrans
             UsuarioCadastro = input.UsuarioCadastro
         };
 
-        return (await repository.CriarAsync(entity, cancellationToken)).ToOutput();
+        var output = (await repository.CriarAsync(entity, cancellationToken)).ToOutput();
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<TransporteOutput>
+        {
+            EventType = EventTypes.TransporteCriado,
+            AggregateType = "transporte",
+            AggregateId = output.Id,
+            UserId = input.UsuarioCadastro,
+            Payload = output
+        }, cancellationToken);
+
+        return output;
     }
 
     public async Task<TransporteOutput> AtualizarAsync(Guid id, TransporteInput input, CancellationToken cancellationToken)
@@ -48,7 +61,18 @@ public sealed class TransporteService(ITransporteRepository repository) : ITrans
 
         var updated = await repository.AtualizarAsync(entity, cancellationToken)
             ?? throw new DomainException("Transporte nao encontrado.", StatusCodes.Status404NotFound);
-        return updated.ToOutput();
+        var output = updated.ToOutput();
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<TransporteOutput>
+        {
+            EventType = EventTypes.TransporteAtualizado,
+            AggregateType = "transporte",
+            AggregateId = output.Id,
+            UserId = input.UsuarioAlteracao,
+            Payload = output
+        }, cancellationToken);
+
+        return output;
     }
 
     public async Task DefinirAtivoAsync(Guid id, bool ativo, Guid? usuarioAlteracao, CancellationToken cancellationToken)
@@ -57,5 +81,18 @@ public sealed class TransporteService(ITransporteRepository repository) : ITrans
         {
             throw new DomainException("Transporte nao encontrado.", StatusCodes.Status404NotFound);
         }
+
+        await kafkaEventPublisher.PublishAsync(new IntegrationEvent<StatusChangedPayload>
+        {
+            EventType = EventTypes.TransporteStatusAlterado,
+            AggregateType = "transporte",
+            AggregateId = id,
+            UserId = usuarioAlteracao,
+            Payload = new StatusChangedPayload
+            {
+                Id = id,
+                Ativo = ativo
+            }
+        }, cancellationToken);
     }
 }
